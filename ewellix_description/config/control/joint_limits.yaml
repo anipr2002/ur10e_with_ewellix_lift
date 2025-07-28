@@ -1,0 +1,7 @@
+default_velocity_scaling_factor: 0.5
+default_acceleration_scaling_factor: 0.5
+
+joint_limits:
+  lift_lower_joint:
+    has_acceleration_limits: true
+    max_acceleration: 1.0

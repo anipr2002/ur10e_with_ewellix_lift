@@ -1,0 +1,4 @@
+# Default initial positions for ewellix_lift's ros2_control fake system
+
+initial_positions:
+  lift_lower_joint: 0
