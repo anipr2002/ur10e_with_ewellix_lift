@@ -63,40 +63,40 @@ def generate_launch_description():
     ])
 
     # Gazebo
-    ros_gz_sim = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource([gz_sim_launch]),
-        launch_arguments=[
-            ('gz_args', ['empty.sdf',
-                         ' -r',
-                         ' -v 4',
-                         ])
-        ]
-    )
+    # ros_gz_sim = IncludeLaunchDescription(
+    #     PythonLaunchDescriptionSource([gz_sim_launch]),
+    #     launch_arguments=[
+    #         ('gz_args', ['empty.sdf',
+    #                      ' -r',
+    #                      ' -v 4',
+    #                      ])
+    #     ]
+    # )
 
-    # Spawn Robot
-    group_action_spawn_robot = GroupAction([
-        # Description
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource([description_launch]),
-            launch_arguments=[
-                ('use_sim_time', 'true'),
-                ('control_config', control_config_file)
-            ],
-        ),
+    # # Spawn Robot
+    # group_action_spawn_robot = GroupAction([
+    #     # Description
+    #     IncludeLaunchDescription(
+    #         PythonLaunchDescriptionSource([description_launch]),
+    #         launch_arguments=[
+    #             ('use_sim_time', 'true'),
+    #             ('control_config', control_config_file)
+    #         ],
+    #     ),
 
-        # Create
-        Node(
-            package='ros_gz_sim',
-            executable='create',
-            arguments=['-name', 'lift',
-                       '-x', '0.0',
-                       '-y', '0.0',
-                       '-z', '1.0',
-                       '-Y', '0.0',
-                       '-topic', 'robot_description'],
-            output='screen'
-        ),
-    ])
+    #     # Create
+    #     Node(
+    #         package='ros_gz_sim',
+    #         executable='create',
+    #         arguments=['-name', 'lift',
+    #                    '-x', '0.0',
+    #                    '-y', '0.0',
+    #                    '-z', '1.0',
+    #                    '-Y', '0.0',
+    #                    '-topic', 'robot_description'],
+    #         output='screen'
+    #     ),
+    # ])
 
     # Controllers
     group_action_controllers = GroupAction([
@@ -156,10 +156,10 @@ def generate_launch_description():
                         ])
 
     # Launch RViz
-    config_rviz_moveit = PathJoinSubstitution([
-                     FindPackageShare('ewellix_examples'),
-                     'config',
-                     'moveit.rviz'])
+    # config_rviz_moveit = PathJoinSubstitution([
+    #                  FindPackageShare('ewellix_examples'),
+    #                  'config',
+    #                  'moveit.rviz'])
 
     config_rviz_example = PathJoinSubstitution([
                      FindPackageShare('ewellix_examples'),
@@ -185,7 +185,7 @@ def generate_launch_description():
                 package='rviz2',
                 executable='rviz2',
                 name='rviz2_moveit',
-                arguments=['-d', config_rviz_moveit],
+                # arguments=['-d', config_rviz_moveit],
                 parameters=[{'use_sim_time': True}],
                 output='screen',
                 condition=IfCondition(launch_rviz)
@@ -193,7 +193,7 @@ def generate_launch_description():
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource([
                     PathJoinSubstitution([
-                        FindPackageShare('moveit_config'),
+                        FindPackageShare('ewellix_moveit_config'),
                         'launch',
                         'move_group_sim.launch.py'
                     ])
@@ -208,8 +208,8 @@ def generate_launch_description():
     ld.add_action(arg_launch_moveit)
     ld.add_action(arg_launch_rviz)
     ld.add_action(gz_sim_resource_path)
-    ld.add_action(ros_gz_sim)
-    ld.add_action(group_action_spawn_robot)
+    # ld.add_action(ros_gz_sim)
+    # ld.add_action(group_action_spawn_robot)
     ld.add_action(group_action_controllers)
     ld.add_action(clock_bridge)
     ld.add_action(example_group_action)

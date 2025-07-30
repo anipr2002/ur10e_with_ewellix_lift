@@ -1,12 +1,13 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, ExecuteProcess, RegisterEventHandler
 from launch_ros.actions import Node
-from launch.substitutions import LaunchConfiguration, Command
+from launch.substitutions import LaunchConfiguration, Command, PathJoinSubstitution
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.event_handlers import OnProcessStart
 from launch.event_handlers import OnProcessExit
 from launch.events import TimerEvent
 from launch.actions import TimerAction
+from launch.conditions import LaunchConfigurationEquals
 from ament_index_python.packages import get_package_share_directory
 from launch_ros.substitutions import FindPackageShare
 import os
@@ -20,6 +21,15 @@ def generate_launch_description():
     joint_controllers_file = os.path.join(
         get_package_share_directory('simulation_10x'), 'config', 'ur_controllers.yaml'
     )
+
+    # Lift controller configuration
+    controller_file = LaunchConfiguration('controller_file')
+    lift_control_config_file = PathJoinSubstitution([
+        FindPackageShare('ewellix_description'),
+        'config',
+        'control',
+        controller_file
+    ])
 
     moveit_config = (
         MoveItConfigsBuilder("custom_robot", package_name="moveit_config")
@@ -41,6 +51,12 @@ def generate_launch_description():
     z_arg = DeclareLaunchArgument('z', default_value='0', description='Z position of the robot')
     world_file_arg = DeclareLaunchArgument('world_file', default_value='empty.sdf', description='Gazebo world file')
     gazebo_gui_arg = DeclareLaunchArgument('gazebo_gui', default_value='true', description='Start gazebo with GUI?')
+    controller_file_arg = DeclareLaunchArgument(
+        'controller_file',
+        choices=['jtc.yaml', 'jpc.yaml'],
+        default_value='jtc.yaml',
+        description='Controller Type, Joint Traj. (jtc) or Position (jpc)'
+    )
 
     # Include Ignition Gazebo launch file
     gazebo = IncludeLaunchDescription(
@@ -103,7 +119,7 @@ def generate_launch_description():
     controller_manager_node = Node(
         package='controller_manager',
         executable='ros2_control_node',
-        parameters=[moveit_config.robot_description, joint_controllers_file, {"use_sim_time": True}],
+        parameters=[moveit_config.robot_description, joint_controllers_file, lift_control_config_file, {"use_sim_time": True}],
         output='screen',
         remappings=[
             ("~/robot_description", "/robot_description"),
@@ -140,6 +156,25 @@ def generate_launch_description():
         arguments=["gripper_position_controller", "--controller-manager", "/controller_manager"],
         output="screen",
         parameters=[{"use_sim_time": True}],
+    )
+
+    # Lift controller spawners
+    lift_joint_trajectory_controller_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=["lift_joint_trajectory_controller", "--controller-manager", "/controller_manager", "--controller-manager-timeout", "60"],
+        output="screen",
+        parameters=[{"use_sim_time": True}],
+        condition=LaunchConfigurationEquals('controller_file', 'jtc.yaml')
+    )
+
+    lift_position_controller_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=["lift_position_controller", "--controller-manager", "/controller_manager", "--controller-manager-timeout", "60"],
+        output="screen",
+        parameters=[{"use_sim_time": True}],
+        condition=LaunchConfigurationEquals('controller_file', 'jpc.yaml')
     )
 
     use_sim_time={"use_sim_time": True}
@@ -182,12 +217,20 @@ def generate_launch_description():
         )
     )
 
+    delay_lift_controller = RegisterEventHandler(
+        OnProcessStart(
+            target_action=gripper_trajectory_controller_spawner,
+            on_start=[lift_joint_trajectory_controller_spawner, lift_position_controller_spawner],
+        )
+    )
+
     # Launch Description
     ld.add_action(x_arg)
     ld.add_action(y_arg)
     ld.add_action(z_arg)
     ld.add_action(world_file_arg)
     ld.add_action(gazebo_gui_arg)
+    ld.add_action(controller_file_arg)
     ld.add_action(gazebo)
     ld.add_action(gz_sim_bridge)
     ld.add_action(controller_manager_node)  # has to be loaded first
@@ -198,6 +241,7 @@ def generate_launch_description():
     ld.add_action(delay_joint_state_broadcaster)
     ld.add_action(delay_arm_controller)
     ld.add_action(delay_gripper_controller)
+    ld.add_action(delay_lift_controller)
     ld.add_action(delay_rviz_node)  
 
     return ld
