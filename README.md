@@ -35,9 +35,11 @@ The Ewellix lift is integrated into the simulation to provide vertical motion fo
 ### Images/Videos
 
 
-<video width="100%" controls>
-  <source src="docs/assets/sim.mp4" type="video/mp4">
-</video>
+
+https://github.com/user-attachments/assets/931bbc65-e857-43d5-8cbc-1b49b363920d
+
+
+
 
 ![Velocity profiles](docs/assets/arm_with_lift.png)
 ![Velocity profiles](docs/assets/just_the_arm.png)
