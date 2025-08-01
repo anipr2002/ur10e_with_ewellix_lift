@@ -4,7 +4,7 @@
   <xacro:include filename="$(find simulation_10x)/urdf/ewellix_macro.xacro"/>
 
   <!-- Arguments -->
-  <xacro:arg name="type" default="tlt_x25"/>
+  <xacro:arg name="type" default="tlt_x27"/>
   <xacro:arg name="tf_prefix" default="lift_"/>
   <xacro:arg name="add_plate" default="true"/>
   <xacro:arg name="initial_positions" default="${dict(lower=0.0, upper=0.0)}"/>

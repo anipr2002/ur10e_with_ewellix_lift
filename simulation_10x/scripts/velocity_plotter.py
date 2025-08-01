@@ -6,13 +6,13 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-from collections import deque
 import numpy as np
-import threading
-import queue
 import time
 import signal
 import sys
+import os
+import threading
+from collections import deque
 
 class VelocityPlotter(Node):
     def __init__(self):
@@ -34,79 +34,82 @@ class VelocityPlotter(Node):
             10
         )
         
-        # Data storage - use lists instead of deque to preserve all data
+        # Data storage
         self.time_data = []
         self.velocity_data = {}
         self.joint_names = []
         self.start_time = None
-        self.recording = False  # Flag to control when to start recording
+        self.recording = False
+        self.should_save = False
         
-        # Display window settings
-        self.display_window = 30.0  # Show last 30 seconds in the plot
-        
-        # Thread-safe queue for data transfer
-        self.data_queue = queue.Queue()
-        
-        # Animation reference
-        self.ani = None
-        
-        # Shutdown flag
+        # Control flags
+        self.running = True
+        self.plot_ready = False
         self.shutdown_requested = False
         
-        # Setup the plot
-        self.setup_plot()
+        # Display settings
+        self.display_window = 30.0  # Show last 30 seconds
         
-        self.get_logger().info("Velocity plotter node started. Waiting for start signal...")
+        # Threading for plot
+        self.data_lock = threading.Lock()
+        
+        self.get_logger().info("Velocity plotter node started and ready.")
     
     def status_callback(self, msg):
         """Callback for movement status messages"""
         if msg.data == 'start':
             self.get_logger().info("Start signal received. Beginning data recording.")
-            self.recording = True
-            self.start_time = time.time()
+            with self.data_lock:
+                # Clear previous data to start fresh
+                self.time_data = []
+                self.velocity_data = {}
+                self.joint_names = []  # Reset joint names to force reinitialization
+                self.recording = True
+                self.start_time = time.time()
+                self.get_logger().info("Data recording initialized.")
+            
         elif msg.data == 'complete':
-            self.get_logger().info("Movement complete signal received. Saving plot and shutting down.")
-            self.recording = False
-            self.save_plot()
-            self.shutdown_requested = True
-            # Stop the animation and close the plot window
-            if self.ani:
-                self.ani.event_source.stop()
-            plt.close(self.fig)
+            self.get_logger().info(f"Movement complete signal received. Captured {len(self.time_data)} data points.")
+            with self.data_lock:
+                self.recording = False
+                self.should_save = True
+                self.shutdown_requested = True
 
     def joint_state_callback(self, msg):
         """Callback for joint state messages"""
         # Only record data when recording is enabled
-        if not self.recording:
+        if not self.recording or self.start_time is None:
+            self.get_logger().debug("Skipping data recording - not active")
             return
             
-        if self.start_time is None:
-            self.start_time = time.time()
+        if not msg.velocity:
+            self.get_logger().warn("Received joint state with no velocity data")
+            return
             
-        if not self.joint_names:
-            self.joint_names = msg.name
-            # Initialize velocity data storage for each joint
-            for joint_name in self.joint_names:
-                self.velocity_data[joint_name] = []
-        
-        current_time = time.time() - self.start_time
-        
-        # Store data in thread-safe queue
-        data_point = {
-            'time': current_time,
-            'joint_names': msg.name,
-            'velocities': msg.velocity
-        }
-        
-        try:
-            self.data_queue.put_nowait(data_point)
-        except queue.Full:
-            # If queue is full, remove oldest item and add new one
-            try:
-                self.data_queue.get_nowait()
-                self.data_queue.put_nowait(data_point)
-            except queue.Empty:
-                pass
+        with self.data_lock:
+            # Initialize joint names if not done yet
+            if not self.joint_names:
+                self.joint_names = list(msg.name)
+                for joint_name in self.joint_names:
+                    self.velocity_data[joint_name] = []
+            
+            # Calculate time since start
+            current_time = time.time() - self.start_time
+            
+            # Store the data
+            self.time_data.append(current_time)
+            
+            # Store velocity data for each joint
+            for i, joint_name in enumerate(msg.name):
+                if joint_name in self.velocity_data:
+                    if i < len(msg.velocity):
+                        velocity = msg.velocity[i]
+                        self.velocity_data[joint_name].append(velocity)
+                        # Debug: Log significant velocities for lift joint
+                        if joint_name == 'lift_lower_joint' and abs(velocity) > 0.001:
+                            self.get_logger().info(f"Lift velocity: {velocity:.6f} rad/s")
+                    else:
+                        self.velocity_data[joint_name].append(0.0)
     
     def setup_plot(self):
         """Setup the matplotlib plot"""
@@ -118,248 +121,235 @@ class VelocityPlotter(Node):
         self.ax.grid(True, alpha=0.3)
         
         # Colors for different joints
-        self.colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD']
+        self.colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#FFB6C1', '#98FB98']
         self.lines = {}
         
-        # Set up the plot limits
-        self.ax.set_xlim(0, self.display_window)
-        self.ax.set_ylim(-3, 3)  # Typical joint velocity range
-        
-        # Add legend placeholder
-        self.ax.legend(loc='upper right')
+        # Set initial plot limits
+        self.ax.set_xlim(0, 10)
+        self.ax.set_ylim(-1, 1)
         
         plt.tight_layout()
-    
-    def update_plot_data(self):
-        """Update plot data from the queue"""
-        # Process all available data from the queue
-        while not self.data_queue.empty():
-            try:
-                data_point = self.data_queue.get_nowait()
-                
-                # Add time point
-                self.time_data.append(data_point['time'])
-                
-                # Add velocity data for each joint
-                for i, joint_name in enumerate(data_point['joint_names']):
-                    if joint_name in self.velocity_data:
-                        if i < len(data_point['velocities']):
-                            velocity = data_point['velocities'][i]
-                            self.velocity_data[joint_name].append(velocity)
-                        else:
-                            self.velocity_data[joint_name].append(0.0)
-                
-            except queue.Empty:
-                break
-    
-    def get_display_data(self):
-        """Get data within the display window"""
-        if len(self.time_data) == 0:
-            return [], {}
-        
-        current_time = self.time_data[-1]
-        start_time = current_time - self.display_window
-        
-        # Find the start index for the display window
-        start_idx = 0
-        for i, t in enumerate(self.time_data):
-            if t >= start_time:
-                start_idx = i
-                break
-        
-        # Get time data for display
-        display_time = self.time_data[start_idx:]
-        
-        # Get velocity data for display
-        display_velocities = {}
-        for joint_name, velocities in self.velocity_data.items():
-            if len(velocities) > start_idx:
-                display_velocities[joint_name] = velocities[start_idx:]
-            else:
-                display_velocities[joint_name] = []
-        
-        return display_time, display_velocities
-    
+        self.plot_ready = True
+
     def animate(self, frame):
         """Animation function for matplotlib"""
-        self.update_plot_data()
-        
-        if len(self.time_data) < 2:
-            return list(self.lines.values())
-        
-        # Get data for the current display window
-        display_time, display_velocities = self.get_display_data()
-        
-        if len(display_time) == 0:
-            return list(self.lines.values())
-        
-        # Convert to numpy arrays for plotting
-        time_array = np.array(display_time)
-        
-        # Update or create lines for each joint
-        legend_labels = []
-        lines_to_return = []
-        
-        for i, (joint_name, velocities) in enumerate(display_velocities.items()):
-            if len(velocities) > 0:
-                velocity_array = np.array(velocities)
-                color = self.colors[i % len(self.colors)]
+        if self.shutdown_requested:
+            plt.close(self.fig)
+            return []
+
+        if not self.plot_ready:
+            return []
+            
+        with self.data_lock:
+            if len(self.time_data) < 2:
+                return list(self.lines.values())
+            
+            # Get recent data for display
+            current_time = self.time_data[-1] if self.time_data else 0
+            start_time = max(0, current_time - self.display_window)
+            
+            # Find start index for display window
+            start_idx = 0
+            for i, t in enumerate(self.time_data):
+                if t >= start_time:
+                    start_idx = i
+                    break
+            
+            display_time = self.time_data[start_idx:] if self.time_data else []
+            
+            if not display_time:
+                return list(self.lines.values())
+            
+            # Update lines for each joint
+            lines_to_return = []
+            legend_labels = []
+            
+            for i, joint_name in enumerate(self.velocity_data.keys()):
+                if joint_name not in self.velocity_data:
+                    continue
+                    
+                velocities = self.velocity_data[joint_name][start_idx:] if len(self.velocity_data[joint_name]) > start_idx else []
                 
-                # Only plot if we have matching time and velocity data
-                if len(velocity_array) == len(time_array):
+                if len(velocities) == len(display_time) and velocities:
+                    color = self.colors[i % len(self.colors)]
+                    
                     if joint_name not in self.lines:
-                        # Create new line
-                        line, = self.ax.plot(time_array, velocity_array, 
+                        line, = self.ax.plot(display_time, velocities, 
                                            color=color, linewidth=2, alpha=0.8, label=joint_name)
                         self.lines[joint_name] = line
                     else:
-                        # Update existing line with new data
-                        self.lines[joint_name].set_data(time_array, velocity_array)
+                        self.lines[joint_name].set_data(display_time, velocities)
                     
                     legend_labels.append(joint_name)
                     lines_to_return.append(self.lines[joint_name])
-        
-        # Update plot limits dynamically
-        if len(time_array) > 0:
-            # Show rolling window
-            max_time = time_array[-1]
-            self.ax.set_xlim(max_time - self.display_window, max_time + 1)
             
-            # Auto-scale y-axis based on current visible data
-            all_velocities = []
-            for velocities in display_velocities.values():
-                if len(velocities) > 0:
-                    all_velocities.extend(velocities)
+            # Update plot limits
+            if display_time:
+                self.ax.set_xlim(start_time, current_time + 1)
+                
+                # Auto-scale y-axis
+                all_velocities = []
+                for joint_name in self.velocity_data:
+                    if joint_name in self.velocity_data:
+                        joint_velocities = self.velocity_data[joint_name][start_idx:]
+                        if joint_velocities:
+                            all_velocities.extend(joint_velocities)
+                
+                if all_velocities:
+                    y_min = min(all_velocities)
+                    y_max = max(all_velocities)
+                    y_margin = max(0.1, abs(y_max - y_min) * 0.1)
+                    self.ax.set_ylim(y_min - y_margin, y_max + y_margin)
             
-            if all_velocities:
-                y_min = min(all_velocities)
-                y_max = max(all_velocities)
-                y_margin = max(0.1, (y_max - y_min) * 0.1)
-                self.ax.set_ylim(y_min - y_margin, y_max + y_margin)
+            # Update legend
+            if legend_labels:
+                self.ax.legend(legend_labels, loc='upper right', fontsize=10)
+            
+            return lines_to_return
+
+    def run_plot(self):
+        """Run the live plot with ROS spinning in background"""
+        # Setup the plot
+        self.setup_plot()
         
-        # Update legend only if it changed
-        if legend_labels and (not hasattr(self, '_last_legend_labels') or 
-                             self._last_legend_labels != legend_labels):
-            self.ax.legend(legend_labels, loc='upper right', fontsize=10)
-            self._last_legend_labels = legend_labels.copy()
+        # Start ROS spinning in a separate thread
+        def ros_spin():
+            while rclpy.ok() and self.running and not self.shutdown_requested:
+                try:
+                    rclpy.spin_once(self, timeout_sec=0.1)
+                except Exception as e:
+                    self.get_logger().error(f"Error in ROS spinning: {e}")
+                    break
+            
+            self.get_logger().info("ROS spinning has stopped.")
+
+
+        self.ros_thread = threading.Thread(target=ros_spin, daemon=True)
+        self.ros_thread.start()
         
-        # Update statistics text
-        if len(time_array) > 0:
-            total_points = len(self.time_data)
-            visible_points = len(time_array)
-            stats_text = f"Time: {time_array[-1]:.1f}s | Total Points: {total_points} | Visible: {visible_points}"
-            if hasattr(self, '_stats_text'):
-                self._stats_text.remove()
-            self._stats_text = self.ax.text(0.02, 0.98, stats_text, transform=self.ax.transAxes,
-                                          fontsize=10, verticalalignment='top',
-                                          bbox=dict(boxstyle='round', facecolor='black', alpha=0.5))
+        # This function will be called when the plot window is closed
+        def on_close(event):
+            self.get_logger().info("Plot window closed by user.")
+            self.shutdown_requested = True
+
+        self.fig.canvas.mpl_connect('close_event', on_close)
+
+        # Start the animation
+        self.ani = animation.FuncAnimation(
+            self.fig, self.animate, interval=100, blit=False, cache_frame_data=False
+        )
         
-        return lines_to_return
+        try:
+            # Show the plot - this will block until window is closed
+            plt.show()
+        except Exception as e:
+            self.get_logger().error(f"Error showing plot: {e}")
+        finally:
+            self.get_logger().info("Plot window closed, ensuring shutdown...")
+            self.running = False
+            self.ros_thread.join(timeout=1.0) # Wait for ros thread to finish
+            # Save plot when window closes
+            if self.should_save and self.time_data:
+                self.save_plot()
     
     def save_plot(self):
         """Save the final plot to a file"""
         try:
-            self.update_plot_data() # Ensure all data is processed
-            
             # Only save if we have data
             if not self.time_data:
                 self.get_logger().warn("No data to save")
                 return
-            
-            # Set final plot limits to show all data
-            self.ax.set_xlim(0, self.time_data[-1] + 1)
                 
-            all_velocities = []
-            for velocities in self.velocity_data.values():
-                if velocities:
-                    all_velocities.extend(velocities)
+            self.get_logger().info(f"Saving plot with {len(self.time_data)} data points...")
             
-            if all_velocities:
-                y_min = min(all_velocities)
-                y_max = max(all_velocities)
-                y_margin = max(0.1, (y_max - y_min) * 0.1)
-                self.ax.set_ylim(y_min - y_margin, y_max + y_margin)
-
-            # Redraw all lines with all data points
-            for joint_name, line in self.lines.items():
-                if joint_name in self.velocity_data and len(self.velocity_data[joint_name]) == len(self.time_data):
-                    line.set_data(self.time_data, self.velocity_data[joint_name])
-
+            # Create the plot
+            plt.style.use('dark_background')
+            fig, ax = plt.subplots(figsize=(12, 8))
+            ax.set_title('Joint Velocities vs Time', fontsize=16, fontweight='bold')
+            ax.set_xlabel('Time (seconds)', fontsize=12)
+            ax.set_ylabel('Velocity (rad/s)', fontsize=12)
+            ax.grid(True, alpha=0.3)
+            
+            # Colors for different joints
+            colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#FFB6C1', '#98FB98']
+            
+            # Plot each joint's velocity
+            plotted_joints = []
+            for i, joint_name in enumerate(self.velocity_data.keys()):
+                velocities = self.velocity_data[joint_name]
+                if len(velocities) == len(self.time_data) and velocities:
+                    color = colors[i % len(colors)]
+                    ax.plot(self.time_data, velocities, 
+                           color=color, linewidth=2, alpha=0.8, label=joint_name)
+                    plotted_joints.append(joint_name)
+            
+            # Set plot limits
+            if self.time_data:
+                ax.set_xlim(0, max(self.time_data) + 0.5)
+                
+                # Auto-scale y-axis
+                all_velocities = []
+                for velocities in self.velocity_data.values():
+                    if velocities:
+                        all_velocities.extend(velocities)
+                
+                if all_velocities:
+                    y_min = min(all_velocities)
+                    y_max = max(all_velocities)
+                    y_margin = max(0.1, abs(y_max - y_min) * 0.1)
+                    ax.set_ylim(y_min - y_margin, y_max + y_margin)
+            
+            # Add legend
+            if plotted_joints:
+                ax.legend(loc='upper right', fontsize=10)
+            
+            plt.tight_layout()
+            
             # Save with timestamp to avoid overwriting
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             filename = f'velocity_plot_{timestamp}.png'
-            self.fig.savefig(filename, dpi=300, bbox_inches='tight')
+            fig.savefig(filename, dpi=300, bbox_inches='tight')
+            plt.close(fig)  # Close to free memory
+            
             self.get_logger().info(f"Plot saved to {filename}")
             
         except Exception as e:
             self.get_logger().error(f"Failed to save plot: {e}")
 
-    def run_plot(self):
-        """Run the matplotlib animation"""
-        # Setup signal handlers for graceful shutdown
-        def signal_handler(signum, frame):
-            self.get_logger().info(f"Received signal {signum}, shutting down gracefully...")
-            self.shutdown_requested = True
-            if self.ani:
-                self.ani.event_source.stop()
-            plt.close(self.fig)
-        
-        signal.signal(signal.SIGTERM, signal_handler)
-        signal.signal(signal.SIGINT, signal_handler)
-        
-        # Start the animation
-        self.ani = animation.FuncAnimation(
-            self.fig, self.animate, interval=50, blit=False, cache_frame_data=False
-        )
-
-        try:
-            # Show the plot - this will block until the window is closed
-            plt.show()
-        except Exception as e:
-            self.get_logger().error(f"Error in plot display: {e}")
-        finally:
-            # Ensure cleanup happens
-            if not self.shutdown_requested:
-                self.save_plot()
 
 def main():
-    # Initialize ROS2
     rclpy.init()
     velocity_plotter = None
     
     try:
-        # Create the node
         velocity_plotter = VelocityPlotter()
 
-        # Start ROS2 spinning in a separate thread
-        def ros_spin():
-            try:
-                while rclpy.ok() and not velocity_plotter.shutdown_requested:
-                    rclpy.spin_once(velocity_plotter, timeout_sec=0.1)
-            except Exception as e:
-                velocity_plotter.get_logger().error(f"Error in ROS spinning: {e}")
+        def signal_handler(signum, frame):
+            velocity_plotter.get_logger().info(f"Signal {signum} received, shutting down.")
+            velocity_plotter.shutdown_requested = True
 
-        ros_thread = threading.Thread(target=ros_spin, daemon=True)
-        ros_thread.start()
-
-        # Run the plot in the main thread
+        signal.signal(signal.SIGTERM, signal_handler)
+        signal.signal(signal.SIGINT, signal_handler)
+        
         velocity_plotter.run_plot()
 
-    except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
-        print("\nShutting down velocity plotter...")
+    except KeyboardInterrupt:
+        print("\nKeyboard interrupt, shutting down...")
     except Exception as e:
-        print(f"Error in velocity plotter: {e}")
+        print(f"An error occurred: {e}")
     finally:
-        # Cleanup
         if velocity_plotter is not None:
-            velocity_plotter.shutdown_requested = True
-            # Save plot on shutdown if we have data
-            if velocity_plotter.time_data:
+            velocity_plotter.running = False
+            # Final save check
+            if velocity_plotter.should_save and velocity_plotter.time_data:
                 velocity_plotter.save_plot()
             if rclpy.ok():
                 velocity_plotter.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
+        print("Velocity plotter shut down successfully.")
+
+
 
 if __name__ == '__main__':
     main() 

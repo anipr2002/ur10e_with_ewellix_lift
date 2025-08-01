@@ -11,7 +11,6 @@ find_package(xacro REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(trajectory_msgs REQUIRED)
-find_package(ewellix_interfaces REQUIRED)
 find_package(ewellix_description REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -26,6 +25,7 @@ install(DIRECTORY launch urdf config rviz
 install(PROGRAMS 
   scripts/velocity_plotter.py
   scripts/move_robot_positions.py
+  scripts/cartesian_shape_drawer.py
 
   DESTINATION lib/${PROJECT_NAME}
 )

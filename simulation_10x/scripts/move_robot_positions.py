@@ -15,9 +15,12 @@ import signal
 class RobotMover(Node):
     def __init__(self):
         super().__init__('robot_mover')
+        # Action client for UR manipulator
         self._action_client = ActionClient(self, MoveGroup, '/move_action')
+        # Action client for lift
+        self._lift_action_client = ActionClient(self, MoveGroup, '/move_action')
         
-        # Positions from SRDF
+        # Positions from SRDF (6 DOF UR manipulator only)
         self.positions = {
             "home": [0.0, -1.0067, 0.9546, -1.215, -1.6315, 0.0],
             "extended_reach": [1.57, -0.78, -1.57, -1.57, 1.57, 0.0],
@@ -29,10 +32,24 @@ class RobotMover(Node):
             "test_position": [0.0, -1.0067, 0.9546, -1.215, -1.6315, 0.0]
         }
         
+        # Lift positions for each movement (varied heights)
+        self.lift_positions = {
+            "home": 0.02,
+            "extended_reach": 0.08,
+            "intermediate_workspace": 0.12,
+            "singularity_avoidance": 0.05,
+            "high_elbow": 0.10,
+            "lateral_extension": 0.15,  # Maximum lift
+            "rapid_transit": 0.03,
+            "test_position": 0.07
+        }
+        
         self.joint_names = [
             "shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
             "wrist_1_joint", "wrist_2_joint", "wrist_3_joint"
         ]
+        
+        self.lift_joint_names = ["lift_lower_joint"]
         
         # Publisher for movement status
         self.status_publisher = self.create_publisher(String, '/movement_status', 10)
@@ -40,9 +57,10 @@ class RobotMover(Node):
         # Initialize velocity plotter process variable
         self.velocity_plotter_process = None
         
-        print("Waiting for MoveGroup action server...")
+        print("Waiting for MoveGroup action servers...")
         self._action_client.wait_for_server()
-        print("Connected!")
+        self._lift_action_client.wait_for_server()
+        print("Connected to both UR manipulator and lift action servers!")
 
     def start_velocity_plotter(self):
         """Start the velocity plotter as a subprocess"""
@@ -55,12 +73,20 @@ class RobotMover(Node):
             # Start velocity plotter as subprocess
             self.velocity_plotter_process = subprocess.Popen(
                 ['python3', velocity_plotter_path],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                # Don't pipe stdout/stderr to avoid buffering issues
+                stdout=None,
+                stderr=None
             )
             print(f"Velocity plotter started with PID: {self.velocity_plotter_process.pid}")
-            # Give the plotter a moment to initialize
-            time.sleep(2)
+            # Give the plotter more time to initialize and connect to ROS
+            print("Waiting for velocity plotter to initialize...")
+            time.sleep(5)  # Increased wait time
+            
+            # Verify plotter is running
+            if self.velocity_plotter_process.poll() is not None:
+                print("Error: Velocity plotter failed to start!")
+                self.velocity_plotter_process = None
+                return
             
         except Exception as e:
             print(f"Failed to start velocity plotter: {e}")
@@ -73,8 +99,8 @@ class RobotMover(Node):
             try:
                 # Send SIGTERM for graceful shutdown
                 self.velocity_plotter_process.terminate()
-                # Wait for process to terminate
-                self.velocity_plotter_process.wait(timeout=10)
+                # Wait for process to terminate (reduced timeout)
+                self.velocity_plotter_process.wait(timeout=5)
                 print("Velocity plotter stopped successfully")
             except subprocess.TimeoutExpired:
                 print("Velocity plotter didn't stop gracefully, forcing shutdown...")
@@ -139,6 +165,44 @@ class RobotMover(Node):
             print(f"Goal rejected for {name}")
             return False
 
+    def move_lift_to_position(self, name, lift_value):
+        """Move the lift to a specific position"""
+        goal = MoveGroup.Goal()
+        goal.request.group_name = "lift"
+        goal.request.max_velocity_scaling_factor = 1.0  # Slower for lift
+        goal.request.max_acceleration_scaling_factor = 1.0
+        
+        constraints = Constraints()
+        constraint = JointConstraint()
+        constraint.joint_name = "lift_lower_joint"
+        constraint.position = lift_value
+        constraint.tolerance_above = 0.01
+        constraint.tolerance_below = 0.01
+        constraint.weight = 1.0
+        constraints.joint_constraints.append(constraint)
+        
+        goal.request.goal_constraints.append(constraints)
+        
+        print(f"Moving lift to {lift_value:.3f}m for {name}...")
+        future = self._lift_action_client.send_goal_async(goal)
+        rclpy.spin_until_future_complete(self, future)
+        
+        goal_handle = future.result()
+        if goal_handle.accepted:
+            result_future = goal_handle.get_result_async()
+            rclpy.spin_until_future_complete(self, result_future)
+            result = result_future.result()
+            
+            if result.result.error_code.val == 1:
+                print(f"Lift reached {lift_value:.3f}m for {name}")
+                return True
+            else:
+                print(f"Failed to move lift for {name}")
+                return False
+        else:
+            print(f"Lift goal rejected for {name}")
+            return False
+
     def run_sequence(self):
         print("Starting robot movement sequence...")
         
@@ -151,17 +215,38 @@ class RobotMover(Node):
         try:
             print("Beginning position sequence...")
             for name, joint_values in self.positions.items():
-                if self.move_to_position(name, joint_values):
-                    time.sleep(1)
+                # First move the lift to the desired height
+                lift_value = self.lift_positions[name]
+                if self.move_lift_to_position(name, lift_value):
+                    time.sleep(0.5)  # Short pause between lift and arm movement
+                    
+                    # Then move the UR manipulator
+                    if self.move_to_position(name, joint_values):
+                        time.sleep(1)
+                    else:
+                        print(f"Stopping sequence due to UR manipulator failure at {name}")
+                        break
                 else:
-                    print(f"Stopping sequence due to failure at {name}")
+                    print(f"Stopping sequence due to lift failure at {name}")
                     break
             print("Sequence complete!")
+            # Give extra time to ensure all movements are fully settled
+            time.sleep(2)
+            # Publish completion signal only after successful completion
+            self.publish_complete_signal()
+            
+        except KeyboardInterrupt:
+            print("\nKeyboard interrupt received during movement sequence.")
+            # Send completion signal even on interrupt to save what we have
+            self.publish_complete_signal()
+            
+        except Exception as e:
+            print(f"Exception during movement sequence: {e}")
+            # Send completion signal on error to save what we have
+            self.publish_complete_signal()
             
         finally:
-            # Always publish completion and stop plotter, even if movement failed
-            self.publish_complete_signal()
-            # Give the velocity plotter time to save the plot
+            # Give the velocity plotter time to save the plot and then stop it
             time.sleep(3)
             self.stop_velocity_plotter()
 

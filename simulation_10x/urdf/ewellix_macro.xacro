@@ -74,7 +74,7 @@
     tf_prefix
     add_plate:=true
     initial_positions:=${dict(upper=0.0, lower=0.0)}
-    parameters_file:='$(find ewellix_description)/config/tlt_x25.yaml'
+    parameters_file:='$(find ewellix_description)/config/tlt_x27.yaml'
     generate_ros2_control_tag:=false
     use_fake_hardware:=false
     sim_ignition:=false

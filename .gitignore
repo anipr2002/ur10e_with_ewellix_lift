@@ -3,5 +3,6 @@ install/
 log/
 Universal_Robots*
 ros2_robotiq_gripper
-
+*.pyc
+__pycache__/
 

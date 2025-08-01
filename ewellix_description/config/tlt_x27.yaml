@@ -46,7 +46,7 @@ lower:
   offset: 0.0
   joint:
     limit:
-      effort: 2000
+      effort: 20000
       lower: 0.0
       upper: 0.15
       velocity: 0.088
@@ -70,7 +70,7 @@ upper:
   offset: 0.0
   joint:
     limit:
-      effort: 2000
+      effort: 20000
       lower: 0.0
       upper: 0.15
       velocity: 0.088

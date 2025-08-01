@@ -13,7 +13,6 @@
   <depend>rclcpp</depend>
   <depend>std_msgs</depend>
   <depend>trajectory_msgs</depend>
-  <depend>ewellix_interfaces</depend>
   <depend>ewellix_description</depend>
   <depend>moveit_ros_planning_interface</depend>
   <depend>moveit_core</depend>
